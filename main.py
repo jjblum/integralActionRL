@@ -2,7 +2,7 @@ import numpy as np
 from vispy import scene, visuals, app
 from vispy.util import ptime
 import scipy.integrate as spi
-import sys
+from time import sleep
 
 import SimpleOscillatorVisualization
 import SimpleOscillator
@@ -54,21 +54,25 @@ LINES = {"goal": scene.visuals.Line(pos=np.zeros((2, 2), dtype=np.float32), colo
 for k in LINES:
     LINES[k].transform = scene.transforms.STTransform()
 
-OSCILLATORS = {"pid": SimpleOscillator.SimpleOscillator(k=0.1, c=0.1, goal=100, g=10, max_force=100, control_hz=100)}
+OSCILLATORS = {"pid": SimpleOscillator.SimpleOscillator(k=0.1, c=0.1, goal=100, g=0, max_force=100, control_hz=5)}
 
+TRANSITION_EXPERIENCES = list()
 
-TIME_DILATION = 1.0  # the number of seconds that pass in the program for every real-time second
+ITERATION_INTERVAL = 0.1  # time in seconds that passes each interval
 FIRST_TIME = 0
 LAST_TIME = 0
 TOTAL_ITERATIONS = 0
 
 
 def iterate(event):  # event is unused
-    global FIRST_TIME, LAST_TIME, CANVAS, TIME_DILATION, TOTAL_ITERATIONS, CANVAS
+    global FIRST_TIME, LAST_TIME, CANVAS, TIME_DILATION, TOTAL_ITERATIONS, CANVAS, GLOBAL_TIMER
+
+    GLOBAL_TIMER.stop()
+
     if TOTAL_ITERATIONS < 1:
         FIRST_TIME = ptime.time()  # there is a huge gap in time as the window opens, so we need this manual time reset for the very first iteration
     TOTAL_ITERATIONS += 1
-    current_time = TIME_DILATION*(ptime.time() - FIRST_TIME)
+    current_time = TOTAL_ITERATIONS*ITERATION_INTERVAL
     # print "Total iterations = {}, t = {}".format(TOTAL_ITERATIONS, current_time)
     TEXT_BOXES["time"].text = "t = {}".format(SimpleOscillatorVisualization.format_time_string(current_time, 2))
     times = np.linspace(LAST_TIME, current_time, 10)
@@ -87,15 +91,20 @@ def iterate(event):  # event is unused
             if np.abs(oscillator.getState()[1]) < 1:
                 TEXT_BOXES["pos"].color = COLORS["green"]
                 print("Oscillator {} reached goal state in {} seconds".format(oscillator.getName(), current_time))
-                # sys.exit()
-
+                GLOBAL_TIMER.disconnect(iterate)  # stop the simulation by disconnecting this callback
+                return
 
     LAST_TIME = current_time
     CANVAS.update()
+
+    GLOBAL_TIMER.start()
     return
 
-GLOBAL_TIMER = app.Timer('auto', connect=iterate, start=True)
+GLOBAL_APP = app.Application()
+GLOBAL_TIMER = app.Timer(interval='auto', connect=iterate, start=True)
 
 if __name__ == "__main__":
     CANVAS.update()
-    app.run()
+    GLOBAL_APP.run()
+
+

@@ -35,7 +35,7 @@ class SimpleOscillator:
         self._name = name
         self._max_force = max_force  # maximum possible action
         if policy == "pid":
-            self._policy = Policy.Policy_PID(1, 0.1, 0.2, self._goal, self._t, "pid")
+            self._policy = Policy.Policy_PID(0.01, 0.001, 0.01, self._goal, self._t, "pid")
 
     def getPhysics(self):
         return self._m, self._k, self._c, self._g, self._f
@@ -52,7 +52,9 @@ class SimpleOscillator:
         Given current state, return policy's recommended action
         """
         self._t = t
+        # print("oscillator {} t = {}".format(self._name, self._t))
         if (t - self._t_last_action_update) >= 1/self._control_hz or t == 0:
+            # print("oscillator {} control update!".format(self._name))
             self._f = 0.0*self._f + 1.0*self._max_force*self._policy.getAction(self._state, t)  # policy returns value between -1 and 1, a relative effort
             self._t_last_action_update = t
 
