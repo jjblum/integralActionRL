@@ -41,3 +41,14 @@ class Policy_PID:
         if signal < -1:
             signal = -1
         return signal
+
+
+class NoAction:
+    def __init__(self, name="NoAction"):
+        self._name = name
+
+    def setGoal(self, goal):
+        return
+
+    def getAction(self, state, t):
+        return 0

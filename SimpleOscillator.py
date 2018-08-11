@@ -21,7 +21,7 @@ def simpleOscillatorODE(starting_state, starting_time, oscillator):
 
 
 class SimpleOscillator:
-    def __init__(self, m=1, k=1, c=0, g=0, goal=1, control_hz=10, max_force=100, policy="pid", name="pid"):
+    def __init__(self, m=1, k=1, c=0, g=0, goal=1, control_hz=10, max_force=100, policy="pid", name="pid", initial_state=(0, 0)):
         self._t = 0.0  # time
         self._t_last_action_update = 0.0  # time of last control update
         self._m = m  # mass
@@ -29,11 +29,14 @@ class SimpleOscillator:
         self._c = c  # damping constant
         self._g = g  # bias force (e.g. gravity)
         self._f = 0  # current action force
-        self._state = [0, 0]  # state [x, xdot]
+        self._state = list(initial_state)  # state [x, xdot]
         self._goal = [goal, 0]  # the goal state
         self._control_hz = control_hz
         self._name = name
         self._max_force = max_force  # maximum possible action
+        self._initial_state = list(initial_state)
+        self._previous_state = list(initial_state)
+        self._previous_action = 0
         if policy == "pid":
             self._policy = Policy.Policy_PID(0.01, 0.001, 0.01, self._goal, self._t, "pid")
 
@@ -49,23 +52,36 @@ class SimpleOscillator:
 
     def getAction(self, t):
         """
-        Given current state, return policy's recommended action
+        Given current state, return policy's recommended action.
+        Returns true if an action was evaluated (i.e. control Hz), false if action was not evaluated
         """
         self._t = t
         # print("oscillator {} t = {}".format(self._name, self._t))
         if (t - self._t_last_action_update) >= 1/self._control_hz or t == 0:
-            # print("oscillator {} control update!".format(self._name))
-            self._f = 0.0*self._f + 1.0*self._max_force*self._policy.getAction(self._state, t)  # policy returns value between -1 and 1, a relative effort
+            # policy returns value between -1 and 1, a relative effort, scale by max force
+            self._f = self._max_force*self._policy.getAction(self._state, t)
             self._t_last_action_update = t
+            if t == 0:
+                self.setPrevious()
+            if t != 0:
+                return True
+        return False
 
-    def getLastAction(self):
-        return self._f
+    def getPreviousAction(self):
+        return self._previous_action
 
     def getState(self):
         return self._state
 
+    def getPreviousState(self):
+        return self._previous_state
+
     def setState(self, state):
         self._state = state
+
+    def setPrevious(self):
+        self._previous_state = self.getState()
+        self._previous_action = self._f
 
     def getName(self):
         return self._name
