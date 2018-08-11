@@ -39,6 +39,8 @@ class SimpleOscillator:
         self._previous_action = 0
         if policy == "pid":
             self._policy = Policy.Policy_PID(0.01, 0.001, 0.01, self._goal, self._t, "pid")
+        elif policy == "random_pid":
+            self._policy = Policy.Policy_RandomlyGeneratedPID(self._goal, self._t, "random_pid")
 
     def getPhysics(self):
         return self._m, self._k, self._c, self._g, self._f
