@@ -30,12 +30,16 @@ def generateReward(state, goal, t):
         print("ODE oscillator reached terminal state in {:.2f} seconds".format(t))
         is_terminal = True
         reward = 1000
+    if np.abs(state[0]) > 200 or np.abs(state[1] > 200):
+        print("ODE was very unstable, terminating after {:.2f} seconds".format(t))
+        is_terminal = True
+        reward = -1000
     return reward, is_terminal
 
 
 def singleODEInstance():
     # create the oscillator that will generate experiences
-    osci = SimpleOscillator.SimpleOscillator(k=OSCILLATOR_K, c=OSCILLATOR_C, goal=100, g=OSCILLATOR_G, max_force=100, control_hz=5, policy="random_pid")
+    osci = SimpleOscillator.SimpleOscillator(k=OSCILLATOR_K, c=OSCILLATOR_C, goal=50, g=OSCILLATOR_G, max_force=100, control_hz=5, policy="random_lazy_pid")
 
     # create the dynamic size array for experiences
     experiences = list()
@@ -56,7 +60,7 @@ def singleODEInstance():
             experiences.append(experience)
 
             print_visual = "-"*200
-            index = int(osci.getState()[0])
+            index = int(osci.getState()[0])+100
             print_visual = print_visual[:index] + "X" + print_visual[index + 1:]
             print(print_visual)
 
