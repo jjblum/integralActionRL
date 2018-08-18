@@ -58,9 +58,9 @@ class Policy_RandomlyGeneratedPID:
     def __init__(self, goal, t, name):
         self._name = name
         self._goal = goal
-        p = np.random.rand()*0.02
-        i = np.random.rand()*0.002
-        d = np.random.rand()*0.01
+        p = 0.01 + np.random.rand()*0.02
+        i = np.random.rand()*0.001
+        d = 0.005 + np.random.rand()*0.01
         self._pid = UniversalPID(p, i, d, t, name)
 
     def setGoal(self, goal):
@@ -80,9 +80,9 @@ class Policy_RandomLazyPID:
     def __init__(self, goal, t, name, laziness_probability=0.2):
         self._name = name
         self._goal = goal
-        p = np.random.rand()*0.02
-        i = np.random.rand()*0.002
-        d = np.random.rand()*0.01
+        p = 0.01 + np.random.rand()*0.02
+        i = np.random.rand()*0.001
+        d = 0.005 + np.random.rand()*0.01
         self._laziness_probabiliy = laziness_probability
         self._pid = UniversalPID(p, i, d, t, name)
 
