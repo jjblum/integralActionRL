@@ -12,7 +12,7 @@ import SimpleOscillator
 
 VERBOSE_PRINTOUT_FOR_OSCILLATORS = False
 
-ODE_INSTANCES_BEFORE_LEARNING_STARTS = 100
+ODE_INSTANCES_BEFORE_LEARNING_STARTS = 50
 
 STATE_DIMENSIONS = 2  # position, velocity
 ACTION_DIMENSIONS = 1  # force
@@ -20,34 +20,51 @@ EXPERIENCE_DIMENSIONS = STATE_DIMENSIONS*2 + ACTION_DIMENSIONS + 1  # state 0, a
 
 DYN_INPUT_DIMENSIONS = STATE_DIMENSIONS + ACTION_DIMENSIONS
 DYN_OUTPUT_DIMENSIONS = STATE_DIMENSIONS
-DYN_HIDDEN_LAYERS_SIZES = [20, 20]
-DYN_DROPOUT_RATE = 0.1
+DYN_HIDDEN_LAYERS_SIZES = [100]
+DYN_DROPOUT_RATE = 0.25
+ACTIVATION = "relu"
+EPOCHS = 30
 
 ODE_TIME_STEP = 0.1  # seconds
-ODE_DEADLINE = 100  # seconds before ODE is prematurely terminated
+ODE_DEADLINE = 150  # seconds before ODE is prematurely terminated
 
+OSCILLATOR_M = 1
 OSCILLATOR_K = 0.1
-OSCILLATOR_C = 0.0001
+OSCILLATOR_C = 0.001
 OSCILLATOR_G = 0
 
 
-def generateReward(state, goal, t):
+
+
+def generateReward(oscillator, t):
     is_terminal = False
     reward = 0
-    if np.abs(state[0] - goal) < 1 and np.abs(state[1]) < 1:
-        print("ODE oscillator reached terminal state in {:.2f} seconds".format(t))
+
+    goal = oscillator.getGoal()
+    state = oscillator.getState()
+    m, k, c, g, f = oscillator.getPhysics()
+
+    kinetic_energy = 0.5*m*np.power(state[1], 2)
+    potential_energy = 0.5*k*np.power(goal, 2) + OSCILLATOR_M*np.abs(g)
+    total_energy = kinetic_energy + potential_energy
+    terminal_total_energy = 0.5*k*np.power(goal, 2) + m*np.abs(g)  # potential energy only
+
+    if np.abs(total_energy - terminal_total_energy) < 0.1 and np.abs(state[0] - goal) < 0.1:
+        print("oscillator reached terminal state [{:.2f}, {:.2f}] in {:.2f} seconds".format(state[0], state[1], t))
         is_terminal = True
         reward = 1000
-    if np.abs(state[0]) > 200 or np.abs(state[1] > 200):
-        print("ODE was very unstable, terminating after {:.2f} seconds".format(t))
+
+    if np.abs(state[0]) > 200 or np.abs(state[1]) > 200:
+        print("oscillator was very unstable, terminating after {:.2f} seconds".format(t))
         is_terminal = True
         reward = -1000
+
     return reward, is_terminal
 
 
 def singleODEInstance():
     # create the oscillator that will generate experiences
-    osci = SimpleOscillator.SimpleOscillator(k=OSCILLATOR_K, c=OSCILLATOR_C, goal=50, g=OSCILLATOR_G, max_force=100, control_hz=5, policy="random_lazy_pid")
+    osci = SimpleOscillator.SimpleOscillator(m=OSCILLATOR_M, k=OSCILLATOR_K, c=OSCILLATOR_C, goal=50, g=OSCILLATOR_G, max_force=100, control_hz=5, policy="random_pid")
 
     # create the dynamic size array for experiences
     experiences = list()
@@ -61,7 +78,7 @@ def singleODEInstance():
         action_updated = osci.getAction(osci_time)
         if action_updated:
             # collate the experience
-            reward, terminal = generateReward(osci.getState(), osci.getGoal(), osci_time)
+            reward, terminal = generateReward(osci, osci_time)
             old_state = osci.getPreviousState()
             action = osci.getPreviousAction()
             new_state = list(osci.getState())
@@ -87,41 +104,80 @@ def singleODEInstance():
 
 
 def singleNNInstance(dyn_model):
-    osci = SimpleOscillator.SimpleOscillator(k=OSCILLATOR_K, c=OSCILLATOR_C, goal=50, g=OSCILLATOR_G, max_force=100, control_hz=5, policy="pid")
-    position_time_history = list()
+    osci = SimpleOscillator.SimpleOscillator(m=OSCILLATOR_M, k=OSCILLATOR_K, c=OSCILLATOR_C, goal=25, g=OSCILLATOR_G, max_force=100, control_hz=5, policy="pid")
+    state_time_history = list()
+    action_time_history = list()
     print("Running a single instance of the dynamics NN oscillator")
-    osci_time = 0  # simulation elapsed time in seconds
+    osci_time = 0
     terminal = False
     osci.setPrevious()
     while not terminal and osci_time < ODE_DEADLINE:
-        osci.getAction(osci_time)  # we don't check if action is updated, because by definition it MUST be b/c of how we use the NN
+        action_updated = osci.getAction(osci_time, forced_to_take_action=True)
 
-        reward, terminal = generateReward(osci.getState(), osci.getGoal(), osci_time)
+        if not (osci_time == 0 or action_updated):
+            print("t = {} didn't take an action!".format(osci_time))
+
+        goal = osci.getGoal()
+        reward, terminal = generateReward(osci, osci_time)
 
         old_state = osci.getPreviousState()
         action = osci.getPreviousAction()
 
-        position_time_history.append([osci_time, old_state[0]])
+        state_time_history.append([osci_time, old_state[0], old_state[1]])
+        action_time_history.append([osci_time, action])
 
         dyn_input = np.reshape(np.array([old_state[0], old_state[1], action]), (1, DYN_INPUT_DIMENSIONS))
 
         osci.setPrevious()
 
         dyn_output = dyn_model.predict(dyn_input)
+        new_state = dyn_output[0]
+        osci.setState(new_state)
 
-        osci.setState(dyn_output[0])
+        osci_time += 1/5  ###################################### time steps must coincide with the timestep used to generate the NN inputs!!!!! i.e. 1/control_hz
 
-        osci_time += 1/5  ###################################### TODO: time steps must coincide with the timestep used to generate the NN inputs!!!!! i.e. 1/control_hz
+    #state_time_history.append([osci_time, old_state[0], old_state[1]])
+    #action_time_history.append([osci_time, action])
+    state_time_history = np.array(state_time_history)
+    action_time_history = np.array(action_time_history)
 
-        #print_visual = "-" * 200
-        #index = int(osci.getState()[0]) + 100
-        #print_visual = print_visual[:index] + "X" + print_visual[index + 1:]
-        #print(print_visual)
+    final_position = state_time_history[-1, 1]
+    final_velocity = state_time_history[-1, 2]
+    final_action = action_time_history[-1, 1]
+    print("\tFinal position: {:.2f}\n\tFinal velocity: {:.2f}\n\tFinal action: {:.2f}".format(final_position, final_velocity, final_action))
+    mean_position = np.mean(state_time_history[:, 1])
+    mean_velocity = np.mean(state_time_history[:, 2])
+    mean_action = np.mean(action_time_history[:, 1])
+    print("\tMean position: {:.2f}\n\tMean velocity: {:.2f}\n\tMean action: {:.2f}".format(mean_position, mean_velocity, mean_action))
 
-    position_time_history.append([osci_time, old_state[0]])
-    position_time_history = np.array(position_time_history)
-    plt.plot(position_time_history[:, 0], position_time_history[:, 1])
+    plt.rcParams.update({'font.size': 22})
+    fig, ax1 = plt.subplots()
+
+    ax1.plot(state_time_history[:, 0], state_time_history[:, 1], 'r')
+    ax1.set_xlabel('time (s)')
+    ax1.set_ylabel('dyn NN position', color="r")
+    ax1.tick_params('y', colors='r')
+
+    ax2 = ax1.twinx()
+    ax2.plot(state_time_history[:, 0], state_time_history[:, 2], 'b')
+    ax2.set_xlabel('time (s)')
+    ax2.set_ylabel('dyn NN velocity', color="b")
+    ax2.tick_params('y', colors='b')
+
+    ax3 = ax1.twinx()
+    ax3.plot(action_time_history[:, 0], action_time_history[:, 1], 'g')
+    ax3.set_xlabel('time (s)')
+    ax3.set_ylabel('\ndyn NN action', color="g")
+    ax3.tick_params('y', colors='g')
+
     plt.show()
+
+    # TODO: if we remove derivative control and just look at simple P control (with some damping in the ODE), the dyn NN reproduces new positions well
+    # TODO:     and it produces something for velocity that ooks fine at first. But notie that even though it converges, the velocity converges to
+    # TODO:     something nonzero. This is impossible - the position oscillates very closely to 50 effecively converged, yet the steady state velocity is 10 units/second???
+    # TODO:     How could the NN begin to think that? The actions are small when position converges, and the NN has been provided data that says velocity is small when
+    # TODO:     current velocity is small and action is low, right?
+    # TODO:     I just flat out do not understand why the NN is saying the velocity oscillates like you expect, but oscillates around a nonzero value you wouldn't
 
 
 
@@ -157,12 +213,12 @@ def main(sess=None):
     dyn_model = keras.Sequential()
 
     n = 1
-    dyn_model.add(keras.layers.Dense(DYN_HIDDEN_LAYERS_SIZES[0], activation="relu", name="dyn_hidden_1", input_shape=(DYN_INPUT_DIMENSIONS,)))
+    dyn_model.add(keras.layers.Dense(DYN_HIDDEN_LAYERS_SIZES[0], activation=ACTIVATION, name="dyn_hidden_1", input_shape=(DYN_INPUT_DIMENSIONS,)))
     dyn_model.add(keras.layers.Dropout(DYN_DROPOUT_RATE, name="dyn_dropout_1"))
 
     for dense_layer_size in DYN_HIDDEN_LAYERS_SIZES[1:]:
         n += 1
-        dyn_model.add(keras.layers.Dense(dense_layer_size, activation="relu", name="dyn_hidden_" + str(n)))
+        dyn_model.add(keras.layers.Dense(dense_layer_size, activation=ACTIVATION, name="dyn_hidden_" + str(n)))
         dyn_model.add(keras.layers.Dropout(DYN_DROPOUT_RATE, name="dyn_dropout_" + str(n)))
 
     dyn_model.add(keras.layers.Dense(DYN_OUTPUT_DIMENSIONS, activation="linear", name="dyn_output"))
@@ -171,7 +227,7 @@ def main(sess=None):
     # TODO: minibatch learn the experiences subset
     # alternate learning the dynamics model via experience replay and generating more experiences
     dyn_batch_inputs, dyn_batch_outputs = randomDynamicsReplay(experiences, len(experiences))
-    dyn_model.fit(dyn_batch_inputs, dyn_batch_outputs, epochs=10, verbose=True)
+    dyn_model.fit(dyn_batch_inputs, dyn_batch_outputs, epochs=EPOCHS, verbose=True, batch_size=32)
 
     # TODO: after X minibatches have been learned...
     # TODO:     1) generate dropout samples of the NN
@@ -179,6 +235,8 @@ def main(sess=None):
     # TODO:     3) visually compare the ODE integration vs. population of NN dropout sample rollouts - MUST USE FIXED POLICY FOR ALL ROLLOUTS!!!
 
     singleNNInstance(dyn_model)
+
+    # TODO: could the nonzero velocity be because position is larger than velocity? Maybe that dominates the signal because I'm usign Relu units.
 
     return
 

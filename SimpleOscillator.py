@@ -38,7 +38,8 @@ class SimpleOscillator:
         self._previous_state = list(initial_state)
         self._previous_action = 0
         if policy == "pid":
-            self._policy = Policy.Policy_PID(0.01, 0.001, 0.01, self._goal, self._t, "pid")
+            #self._policy = Policy.Policy_PID(0.01, 0.001, 0.01, self._goal, self._t, "pid")
+            self._policy = Policy.Policy_PID(0.01, 0.001, 0, self._goal, self._t, "pid")
         elif policy == "random_pid":
             self._policy = Policy.Policy_RandomlyGeneratedPID(self._goal, self._t, "random_pid")
         elif policy == "random_lazy_pid":
@@ -54,14 +55,14 @@ class SimpleOscillator:
     def getGoal(self):
         return self._goal[0]
 
-    def getAction(self, t):
+    def getAction(self, t, forced_to_take_action=False):
         """
         Given current state, return policy's recommended action.
         Returns true if an action was evaluated (i.e. control Hz), false if action was not evaluated
         """
         self._t = t
         # print("oscillator {} t = {}".format(self._name, self._t))
-        if (t - self._t_last_action_update) >= 1/self._control_hz or t == 0:
+        if (t - self._t_last_action_update) >= 1/self._control_hz or t == 0 or forced_to_take_action:
             # policy returns value between -1 and 1, a relative effort, scale by max force
             self._f = self._max_force*self._policy.getAction(self._state, t)
             self._t_last_action_update = t
@@ -89,4 +90,7 @@ class SimpleOscillator:
 
     def getName(self):
         return self._name
+
+    def maxAction(self):
+        return self._max_force
 
