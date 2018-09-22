@@ -19,10 +19,10 @@ EXPERIENCE_DIMENSIONS = STATE_DIMENSIONS*2 + ACTION_DIMENSIONS + 1  # state 0, a
 
 DYN_INPUT_DIMENSIONS = STATE_DIMENSIONS + ACTION_DIMENSIONS
 DYN_OUTPUT_DIMENSIONS = STATE_DIMENSIONS
-DYN_HIDDEN_LAYERS_SIZES = [100]
+DYN_HIDDEN_LAYERS_SIZES = [20, 20]  # [100]
+DYN_HIDDEN_ACTIVATIONS = ["linear", "linear"]
 DYN_DROPOUT_RATE = 0.25
-ACTIVATION = "relu"
-EPOCHS = 10
+EPOCHS = 125
 NORMALIZE_EXPERIENCES = False
 
 ODE_TIME_STEP = 0.1  # seconds
@@ -62,7 +62,7 @@ def generateReward(oscillator, t):
 
 def singleODEInstance(goal=None):
     if goal is None:
-        goal = 100*np.random.rand()
+        goal = 20*np.random.rand() + 10
     # create the oscillator that will generate experiences
     osci = SimpleOscillator.SimpleOscillator(m=OSCILLATOR_M, k=OSCILLATOR_K, c=OSCILLATOR_C, goal=goal, g=OSCILLATOR_G, max_force=100, control_hz=5, policy="random_pid")
 
@@ -70,7 +70,7 @@ def singleODEInstance(goal=None):
     experiences = list()
 
     # run a single instance of the oscillator, storing state transitions in the experiences
-    print("Running a single instance of the ODE oscillator")
+    # print("Running a single instance of the ODE oscillator")
     osci_time = 0  # ODE simulation elapsed time in seconds
     terminal = False
     osci.setPrevious()
@@ -99,7 +99,8 @@ def singleODEInstance(goal=None):
         osci.setState(states[-1])
         osci_time += ODE_TIME_STEP
     if not terminal:
-        print("ODE oscillator did not reach terminal state in {} seconds, terminating".format(ODE_DEADLINE))
+        # print("ODE oscillator did not reach terminal state in {} seconds, terminating".format(ODE_DEADLINE))
+        None
     return experiences
 
 
@@ -171,18 +172,22 @@ def singleNNInstance(dyn_model, dyn_inputs_mean=None, dyn_inputs_stddev=None, dy
     ax1.set_xlabel('time (s)')
     ax1.set_ylabel('dyn NN position', color="r")
     ax1.tick_params('y', colors='r')
+    plt.title("{}, {}".format(DYN_HIDDEN_LAYERS_SIZES, DYN_HIDDEN_ACTIVATIONS))
+    plt.grid(True)
 
     ax2 = ax1.twinx()
     ax2.plot(state_time_history[:, 0], state_time_history[:, 2], 'b')
     ax2.set_xlabel('time (s)')
     ax2.set_ylabel('dyn NN velocity', color="b")
     ax2.tick_params('y', colors='b')
+    plt.grid(True)
 
     ax3 = ax1.twinx()
     ax3.plot(action_time_history[:, 0], action_time_history[:, 1], 'g')
     ax3.set_xlabel('time (s)')
     ax3.set_ylabel('\ndyn NN action', color="g")
     ax3.tick_params('y', colors='g')
+    plt.grid(True)
 
     plt.show()
 
@@ -248,19 +253,18 @@ def main(sess=None):
     for _ in range(ODE_INSTANCES_BEFORE_LEARNING_STARTS):
         experiences.extend(singleODEInstance())
 
-
     # TODO: do we need to normalize (mean = 0, std.dev. = 1) the experiences?
 
     # TODO: setup a simple Relu network representing state+action->new state transitions
     dyn_model = keras.Sequential()
 
     n = 1
-    dyn_model.add(keras.layers.Dense(DYN_HIDDEN_LAYERS_SIZES[0], activation=ACTIVATION, name="dyn_hidden_1", input_shape=(DYN_INPUT_DIMENSIONS,)))
+    dyn_model.add(keras.layers.Dense(DYN_HIDDEN_LAYERS_SIZES[0], activation=DYN_HIDDEN_ACTIVATIONS[0], name="dyn_hidden_1", input_shape=(DYN_INPUT_DIMENSIONS,)))
     dyn_model.add(keras.layers.Dropout(DYN_DROPOUT_RATE, name="dyn_dropout_1"))
 
     for dense_layer_size in DYN_HIDDEN_LAYERS_SIZES[1:]:
         n += 1
-        dyn_model.add(keras.layers.Dense(dense_layer_size, activation=ACTIVATION, name="dyn_hidden_" + str(n)))
+        dyn_model.add(keras.layers.Dense(dense_layer_size, activation=DYN_HIDDEN_ACTIVATIONS[n-1], name="dyn_hidden_" + str(n)))
         dyn_model.add(keras.layers.Dropout(DYN_DROPOUT_RATE, name="dyn_dropout_" + str(n)))
 
     dyn_model.add(keras.layers.Dense(DYN_OUTPUT_DIMENSIONS, activation="linear", name="dyn_output"))
@@ -281,7 +285,7 @@ def main(sess=None):
         dyn_batch_outputs -= np.full(dyn_batch_outputs.shape, dyn_batch_outputs_mean)
         dyn_batch_outputs /= np.full(dyn_batch_outputs.shape, dyn_batch_outputs_stddev)
 
-    dyn_model.fit(dyn_batch_inputs, dyn_batch_outputs, epochs=EPOCHS, verbose=True)
+    dyn_model.fit(dyn_batch_inputs, dyn_batch_outputs, epochs=EPOCHS, verbose=2, validation_split=0.05, batch_size=128, shuffle=True)
 
     # TODO: after X minibatches have been learned...
     # TODO:     1) generate dropout samples of the NN
