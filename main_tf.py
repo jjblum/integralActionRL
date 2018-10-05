@@ -22,8 +22,9 @@ DYN_OUTPUT_DIMENSIONS = STATE_DIMENSIONS
 DYN_HIDDEN_LAYERS_SIZES = [100, 100]
 DYN_HIDDEN_ACTIVATIONS = ["linear", "linear"]
 DYN_DROPOUT_RATE = 0.5
-EPOCHS = 60
+EPOCHS = 120
 NORMALIZE_EXPERIENCES = False
+DROPOUT_SAMPLE_COUNT = 100
 
 ODE_TIME_STEP = 0.1  # seconds
 ODE_DEADLINE = 300  # seconds before ODE is prematurely terminated
@@ -62,6 +63,11 @@ def generateReward(oscillator, t):
         reward = -1000
 
     return reward, is_terminal
+
+
+def createDynamicModelInput(position, velocity, action):
+    # TODO: generalize this so it isn't just position, velocity, and a single action
+    return np.reshape(np.array([position, velocity, action]), (1, DYN_INPUT_DIMENSIONS))
 
 
 def singleODEInstance(goal=None):
@@ -312,8 +318,51 @@ def main(sess=None):
 
     # TODO: after X minibatches have been learned...
     # TODO:     1) generate dropout samples of the NN
+    # TODO:         a) extract the weights from the model
+    # TODO:         b) generate random dropout masks
+    # TODO:         c) apply the masks to copies of the weights and create new models with these weights
     # TODO:     2) perform a physics rollout, replacing the ODE integration with the NN dropout samples (timestep = control Hz timestep, or ODE timestep???)
     # TODO:     3) visually compare the ODE integration vs. population of NN dropout sample rollouts - MUST USE FIXED POLICY FOR ALL ROLLOUTS!!!
+
+    # initialize dropout models
+    dropout_models = list()
+    for _ in range(DROPOUT_SAMPLE_COUNT):
+        dropout_model = keras.Sequential()
+        n = 1
+        dropout_model.add(keras.layers.Dense(DYN_HIDDEN_LAYERS_SIZES[0], activation=DYN_HIDDEN_ACTIVATIONS[0], name="dyn_hidden_1",input_shape=(DYN_INPUT_DIMENSIONS,)))
+        for dense_layer_size in DYN_HIDDEN_LAYERS_SIZES[1:]:
+            n += 1
+            dropout_model.add(keras.layers.Dense(dense_layer_size, activation=DYN_HIDDEN_ACTIVATIONS[n - 1], name="dyn_hidden_" + str(n)))
+            dropout_model.add(keras.layers.Dense(DYN_OUTPUT_DIMENSIONS, activation="linear", name="dyn_output"))
+        dropout_models.append(dropout_model)
+
+    n = 0
+    for i in range(len(dyn_model.layers)):
+        layer = dyn_model.layers[i]
+        # If "dropout" is in the layer name, skip
+        if "dropout" in layer.name:
+            continue
+        print(layer.name)
+        weights_and_biases = layer.get_weights()  # extract the weights (not biases!) from the model
+        weights = weights_and_biases[0]
+        biases = weights_and_biases[1]
+        for dropout_model in dropout_models:
+            weights_mask = np.random.binomial(1, 1 - DYN_DROPOUT_RATE, size=weights.shape) / (1 - DYN_DROPOUT_RATE)
+            masked_weights = np.multiply(weights_mask, weights)
+            masked_weights_and_biases = [masked_weights, biases]
+            dropout_model.layers[n].set_weights(masked_weights_and_biases)
+        n += 1
+
+    # TODO: do i need to compile the models for feedforward-only use?
+    dropout_output_population = np.zeros(shape=(DROPOUT_SAMPLE_COUNT, DYN_OUTPUT_DIMENSIONS))
+    for i in range(DROPOUT_SAMPLE_COUNT):
+        dropout_model = dropout_models[i]
+        dyn_input = createDynamicModelInput(25, 0, -48)  # should result in [25, 0]
+        dyn_output = dropout_model.predict(dyn_input)
+        dropout_output_population[i, :] = dyn_output
+    # print(dropout_output_population)
+    print("mean = {}".format(np.mean(dropout_output_population, axis=0)))
+    print("stdev = {}".format(np.std(dropout_output_population, axis=0)))
 
     # visualizeActionAroundGoal(dyn_model)
 
