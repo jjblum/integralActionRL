@@ -174,7 +174,9 @@ def singleNNInstance(dyn_model, dyn_inputs_mean=None, dyn_inputs_stddev=None, dy
     #action_time_history.append([osci_time, action])
     state_time_history = np.array(state_time_history)
     action_time_history = np.array(action_time_history)
+    return state_time_history, action_time_history
 
+    """
     final_position = state_time_history[-1, 1]
     final_velocity = state_time_history[-1, 2]
     final_action = action_time_history[-1, 1]
@@ -219,20 +221,15 @@ def singleNNInstance(dyn_model, dyn_inputs_mean=None, dyn_inputs_stddev=None, dy
     plt.grid(True)
 
     plt.show()
+    """
 
-    # TODO: if we remove derivative control and just look at simple P control (with some damping in the ODE), the dyn NN reproduces new positions well
-    # TODO:     and it produces something for velocity that ooks fine at first. But notie that even though it converges, the velocity converges to
-    # TODO:     something nonzero. This is impossible - the position oscillates very closely to 50 effecively converged, yet the steady state velocity is 10 units/second???
-    # TODO:     How could the NN begin to think that? The actions are small when position converges, and the NN has been provided data that says velocity is small when
-    # TODO:     current velocity is small and action is low, right?
-    # TODO:     I just flat out do not understand why the NN is saying the velocity oscillates like you expect, but oscillates around a nonzero value you wouldn't
 
 def visualizeActionAroundGoal(dyn_model, goal=TEST_GOAL, n=100):
-    # TODO:     NEW IDEA: what if I, after training, apply the NN with (goal, 0, linspace(-100, 100, 100))
-    # TODO:     i.e. apply the NN with the goal state and a range of actions to see what it predicts for
-    # TODO:     the range of possible actions.
-    # TODO:     Plot the result, x axis is range of actions, y axis 1 is next position, y axis 2 is next velocity
-    # TODO:     Maybe that way I can see where the prediction is accurate and where it is inaccurate
+    # NEW IDEA: what if I, after training, apply the NN with (goal, 0, linspace(-100, 100, 100))
+    # i.e. apply the NN with the goal state and a range of actions to see what it predicts for
+    # the range of possible actions.
+    # Plot the result, x axis is range of actions, y axis 1 is next position, y axis 2 is next velocity
+    # Maybe that way I can see where the prediction is accurate and where it is inaccurate
     actions = np.linspace(-100, 100, n)
     actions = np.atleast_2d(actions)
     actions = actions.T
@@ -353,11 +350,12 @@ def main(sess=None):
             dropout_model.layers[n].set_weights(masked_weights_and_biases)
         n += 1
 
-    # TODO: do i need to compile the models for feedforward-only use?
+    # do not need to compile the models for feedforward-only use
+    """
     dropout_output_population = np.zeros(shape=(DROPOUT_SAMPLE_COUNT, DYN_OUTPUT_DIMENSIONS))
     for i in range(DROPOUT_SAMPLE_COUNT):
         dropout_model = dropout_models[i]
-        dyn_input = createDynamicModelInput(25, 0, -48)  # should result in [25, 0]
+        dyn_input = createDynamicModelInput(TEST_GOAL, TEST_FINAL_VELOCITY, TEST_FINAL_ACTION)  # should result in [TEST_GOAL, TEST_FINAL_VELOCITY]
         dyn_output = dropout_model.predict(dyn_input)
         dropout_output_population[i, :] = dyn_output
     # print(dropout_output_population)
@@ -371,8 +369,74 @@ def main(sess=None):
     else:
         singleNNInstance(dyn_model)
 
-    # TODO: could the nonzero velocity be because position is larger than velocity? Maybe that dominates the signal because I'm usign Relu units.
+    """
 
+    ideal_state_time_history, ideal_action_time_history = singleNNInstance(dyn_model)
+
+    # TODO: trim the time histories so that their length matches the ideal's length
+    state_time_history_samples = list()
+    action_time_history_samples = list()
+    for dropout_model in dropout_models:
+        s, a = singleNNInstance(dropout_model)
+        s = s[:ideal_state_time_history.shape[0], :]
+        a = a[:ideal_state_time_history.shape[0], :]
+        state_time_history_samples.append(s)
+        action_time_history_samples.append(a)
+
+    final_position = ideal_state_time_history[-1, 1]
+    final_velocity = ideal_state_time_history[-1, 2]
+    final_action = ideal_action_time_history[-1, 1]
+    print("\tFinal position: {:.2f}\n\tFinal velocity: {:.2f}\n\tFinal action: {:.2f}".format(
+        final_position, final_velocity, final_action))
+
+    # TODO: plot ideal and samples
+    fig, ax1 = plt.subplots()
+    plt.title("{}, {}".format(DYN_HIDDEN_LAYERS_SIZES, DYN_HIDDEN_ACTIVATIONS))
+    ax1.set_xlabel('time (s)')
+    ax1.set_ylabel('dyn NN position', color="r")
+    ax1.tick_params('y', colors='r')
+    plt.grid(True)
+    ax2 = ax1.twinx()
+    ax2.set_xlabel('time (s)')
+    ax2.set_ylabel('dyn NN velocity', color="b")
+    ax2.tick_params('y', colors='b')
+    ax3 = ax1.twinx()
+    ax3.set_xlabel('time (s)')
+    ax3.set_ylabel('\ndyn NN action', color="g")
+    ax3.tick_params('y', colors='g')
+
+    for i in range(DROPOUT_SAMPLE_COUNT):
+        ax1.plot(state_time_history_samples[i][:, 0], state_time_history_samples[i][:, 1], 'r', linewidth=1.0, alpha=0.5)
+        ax2.plot(state_time_history_samples[i][:, 0], state_time_history_samples[i][:, 2], 'b', linewidth=1.0, alpha=0.5)
+        ax3.plot(action_time_history_samples[i][:, 0], action_time_history_samples[i][:, 1], 'g', linewidth=1.0, alpha=0.5)
+
+    ax1.plot([0, ideal_state_time_history[-1, 0]], [TEST_GOAL, TEST_GOAL], 'r--', linewidth=4.0)
+    ax1.plot(ideal_state_time_history[:, 0], ideal_state_time_history[:, 1], 'r', linewidth=4.0)
+
+    ax2.plot([0, ideal_state_time_history[-1, 0]], [TEST_FINAL_VELOCITY, TEST_FINAL_VELOCITY], 'b--', linewidth=2.0)
+    ax2.plot(ideal_state_time_history[:, 0], ideal_state_time_history[:, 2], 'b', linewidth=2.0)
+
+    ax3.plot([0, ideal_action_time_history[-1, 0]], [TEST_FINAL_ACTION, TEST_FINAL_ACTION], 'g--', linewidth=2.0)
+    ax3.plot(ideal_action_time_history[:, 0], ideal_action_time_history[:, 1], 'g', linewidth=2.0)
+
+    plt.show()
+
+    """
+    
+    ax2.plot(state_time_history[:, 0], state_time_history[:, 2], 'b')
+    ax2.plot([0, state_time_history[-1, 0]], [TEST_FINAL_VELOCITY, TEST_FINAL_VELOCITY], 'b--')
+    # ax2.get_yaxis().set_visible(False)
+
+    plt.grid(True)
+
+    
+    ax3.plot(action_time_history[:, 0], action_time_history[:, 1], 'g')
+    ax3.plot([0, action_time_history[-1, 0]], [TEST_FINAL_ACTION, TEST_FINAL_ACTION], 'g--')
+    # ax3.get_yaxis().set_visible(False)
+    plt.grid(True)
+    
+    plt.show()
+    """
     return
 
 
