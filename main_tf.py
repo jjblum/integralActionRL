@@ -8,8 +8,9 @@ import matplotlib.pyplot as plt
 
 import SimpleOscillator
 
-
+DEBUG_PLOTS_FOR_OSCILLATORS = False
 VERBOSE_PRINTOUT_FOR_OSCILLATORS = False
+DEBUG_EXPERIENCES_SCATTER_PLOT = False
 
 ODE_INSTANCES_BEFORE_LEARNING_STARTS = 100
 
@@ -19,24 +20,28 @@ EXPERIENCE_DIMENSIONS = STATE_DIMENSIONS*2 + ACTION_DIMENSIONS + 1  # state 0, a
 
 DYN_INPUT_DIMENSIONS = STATE_DIMENSIONS + ACTION_DIMENSIONS
 DYN_OUTPUT_DIMENSIONS = STATE_DIMENSIONS
-DYN_HIDDEN_LAYERS_SIZES = [100, 100]
+DYN_HIDDEN_LAYERS_SIZES = [20, 20]
 DYN_HIDDEN_ACTIVATIONS = ["linear", "linear"]
-DYN_DROPOUT_RATE = 0.5
-EPOCHS = 120
+DYN_DROPOUT_RATE = 0.15
+EPOCHS = 40
 NORMALIZE_EXPERIENCES = False
-DROPOUT_SAMPLE_COUNT = 100
+DROPOUT_SAMPLE_COUNT = 0  # can be set to 0 to skip calculating any dropout samples
 
 ODE_TIME_STEP = 0.1  # seconds
 ODE_DEADLINE = 300  # seconds before ODE is prematurely terminated
+ODE_DISTANCE_BETWEEN_EXPERIENCES = 0.1  # we want diverse training, so we resample a time history to avoid too many very similar experiences
 
 OSCILLATOR_M = 1
 OSCILLATOR_K = 0.1
 OSCILLATOR_C = 0.001
-OSCILLATOR_G = 50
+OSCILLATOR_G = 0
 
 TEST_GOAL = 25
 TEST_FINAL_ACTION = OSCILLATOR_K*TEST_GOAL - OSCILLATOR_G
 TEST_FINAL_VELOCITY = 0
+
+PLOT_INCLUDE_VELOCITY = True
+PLOT_INCLUDE_ACTION = True
 
 
 def layerIndexFromLayerName(model, layer_name):
@@ -99,9 +104,9 @@ def singleODEInstance(goal=None):
             # collate the experience
             reward, terminal = generateReward(osci, osci_time)
             old_state = osci.getPreviousState()
-            action = osci.getPreviousAction()
+            old_action = osci.getPreviousAction()
             new_state = list(osci.getState())
-            experience = [old_state[0], old_state[1], action, new_state[0], new_state[1], reward]
+            experience = [old_state[0], old_state[1], old_action, new_state[0]-old_state[0], new_state[1]-old_state[1], reward]
             # print("Generated experience: {}".format(experience))
             osci.setPrevious()  # set previous state and action to current state and action
             experiences.append(experience)
@@ -122,17 +127,33 @@ def singleODEInstance(goal=None):
         None
 
     # TODO: resample so redundant transitions are not included
+    # resampling here means, viewing a complete ODE time history as a sequence of experiences, skip any experience that is too much like the previously retained experience
     experiences_array = np.array(experiences)
     interesting_experiences = [experiences_array[0]]
     for i in range(len(experiences)):
         d = np.linalg.norm(experiences_array[i, :2] - interesting_experiences[-1][:2])
-        if d > 0.1:
+        if d > ODE_DISTANCE_BETWEEN_EXPERIENCES:
             interesting_experiences.append(experiences_array[i])
             # print("{} ADD".format(d))
         else:
             None
             # print("{} skip".format(d))
-    interesting_experiences.append(experiences_array[-1])
+    #interesting_experiences.append(experiences_array[-1])
+
+    if DEBUG_PLOTS_FOR_OSCILLATORS:
+        fig, ax1 = plt.subplots()
+        plt.title("ODE result, goal = {}".format(goal))
+        ax1.plot(np.array(interesting_experiences)[:, 0], 'rx-')
+        ax1.grid(True)
+        ax1.set_ylabel('dyn NN position', color="r")
+        ax1.tick_params('y', colors='r')
+
+        ax2 = ax1.twinx()
+        ax2.plot(np.array(interesting_experiences)[:, 1], 'bx-')
+        ax2.set_ylabel('dyn NN velocity', color="b")
+        ax2.tick_params('y', colors='b')
+        ax2.grid(True)
+        plt.show()
 
     return [a.tolist() for a in interesting_experiences]
 
@@ -144,29 +165,28 @@ def singleNNInstance(dyn_model, dyn_inputs_mean=None, dyn_inputs_stddev=None, dy
     print("Running a single instance of the dynamics NN oscillator")
     osci_time = 0
     terminal = False
-    osci.setPrevious()
     while not terminal and osci_time < ODE_DEADLINE:
-        action_updated = osci.getAction(osci_time, forced_to_take_action=True)
+        osci.setPrevious()  # setPrevious sets previousState and previousAction to current state and action
+
+        action_updated = osci.getAction(osci_time, forced_to_take_action=True)  # take action using current state
 
         if not (osci_time == 0 or action_updated):
             print("t = {} didn't take an action!".format(osci_time))
 
         goal = osci.getGoal()
-        reward, terminal = generateReward(osci, osci_time)
+        reward, terminal = generateReward(osci, osci_time)  # uses current state
 
         old_state = osci.getPreviousState()
-        action = osci.getPreviousAction()
+        old_action = osci.getPreviousAction()
 
         state_time_history.append([osci_time, old_state[0], old_state[1]])
-        action_time_history.append([osci_time, action])
+        action_time_history.append([osci_time, old_action])
 
-        dyn_input = np.reshape(np.array([old_state[0], old_state[1], action]), (1, DYN_INPUT_DIMENSIONS))
+        dyn_input = np.reshape(np.array([old_state[0], old_state[1], old_action]), (1, DYN_INPUT_DIMENSIONS))
 
         if NORMALIZE_EXPERIENCES:
             dyn_input -= np.full(dyn_input.shape, dyn_inputs_mean)
             dyn_input /= np.full(dyn_input.shape, dyn_inputs_stddev)
-
-        osci.setPrevious()
 
         dyn_output = dyn_model.predict(dyn_input)
 
@@ -174,7 +194,7 @@ def singleNNInstance(dyn_model, dyn_inputs_mean=None, dyn_inputs_stddev=None, dy
             dyn_output *= np.full(dyn_output.shape, dyn_outputs_stddev)
             dyn_output += np.full(dyn_output.shape, dyn_outputs_mean)
 
-        new_state = dyn_output[0]
+        new_state = old_state + dyn_output[0]
         osci.setState(new_state)
 
         osci_time += 1/5  ###################################### time steps must coincide with the timestep used to generate the NN inputs!!!!! i.e. 1/control_hz
@@ -279,14 +299,21 @@ def randomDynamicsReplay(experiences, size_of_subset=None):
     return dyn_batch_inputs, dyn_batch_outputs
 
 
-def main(sess=None):
-    if sess is None:
-        sess = tf.Session()
-        sess.run(tf.global_variables_initializer())
-
+def pidBootstrap():
     experiences = list()
     for _ in range(ODE_INSTANCES_BEFORE_LEARNING_STARTS):
-        experiences.extend(singleODEInstance(-50 + 100*np.random.rand()))
+        experiences.extend(singleODEInstance(-50 + 100 * np.random.rand()))
+        # experiences.extend(singleODEInstance(15 + 20*np.random.rand()))
+
+    if DEBUG_EXPERIENCES_SCATTER_PLOT:
+        experiences_array = np.array(experiences)
+        # given position (x) and velocity (y), what was the following velocity (color scale)
+        sp = plt.scatter(experiences_array[:, 0], experiences_array[:, 1], c=experiences_array[:, 4])
+        plt.colorbar(sp)
+        plt.title("pos. + vel. --> change in velocity")
+        plt.xlabel("position")
+        plt.ylabel("velocity")
+        # plt.show()
 
     # TODO: do we need to normalize (mean = 0, std.dev. = 1) the experiences? Or use batch normalization layers?
 
@@ -294,23 +321,33 @@ def main(sess=None):
     dyn_model = keras.Sequential()
 
     n = 1
-    dyn_model.add(keras.layers.Dense(DYN_HIDDEN_LAYERS_SIZES[0], activation=DYN_HIDDEN_ACTIVATIONS[0], name="dyn_hidden_1", input_shape=(DYN_INPUT_DIMENSIONS,)))
+    dyn_model.add(
+        keras.layers.Dense(DYN_HIDDEN_LAYERS_SIZES[0], activation=DYN_HIDDEN_ACTIVATIONS[0], name="dyn_hidden_1",
+                           input_shape=(DYN_INPUT_DIMENSIONS,)))
     # dyn_model.add(keras.layers.BatchNormalization(name="dyn_batchnorm_1")) # TODO: batch normalization?
     dyn_model.add(keras.layers.Dropout(DYN_DROPOUT_RATE, name="dyn_dropout_1"))
 
     for dense_layer_size in DYN_HIDDEN_LAYERS_SIZES[1:]:
         n += 1
-        dyn_model.add(keras.layers.Dense(dense_layer_size, activation=DYN_HIDDEN_ACTIVATIONS[n-1], name="dyn_hidden_" + str(n)))
+        dyn_model.add(
+            keras.layers.Dense(dense_layer_size, activation=DYN_HIDDEN_ACTIVATIONS[n - 1], name="dyn_hidden_" + str(n)))
         # dyn_model.add(keras.layers.BatchNormalization(name="dyn_batchnorm_" + str(n)))  # TODO: batch normalization?
         dyn_model.add(keras.layers.Dropout(DYN_DROPOUT_RATE, name="dyn_dropout_" + str(n)))
 
     dyn_model.add(keras.layers.Dense(DYN_OUTPUT_DIMENSIONS, activation="linear", name="dyn_output"))
     # dyn_model.compile(loss="mean_squared_error", optimizer=keras.optimizers.Adam())
-    dyn_model.compile(loss="mean_absolute_error", optimizer=keras.optimizers.Adam())  # TODO: try different losses
+    # dyn_model.compile(loss="mean_absolute_error", optimizer=keras.optimizers.Adam())  # TODO: try different losses
+    dyn_model.compile(loss="mean_squared_error", optimizer=keras.optimizers.Nadam())
+
+
 
     # alternate learning the dynamics model via experience replay and generating more experiences
     dyn_batch_inputs, dyn_batch_outputs = randomDynamicsReplay(experiences, len(experiences))
 
+    dyn_batch_inputs_mean = None
+    dyn_batch_inputs_stddev = None
+    dyn_batch_outputs_mean = None
+    dyn_batch_outputs_stddev = None
     if NORMALIZE_EXPERIENCES:
         dyn_batch_inputs_mean = np.mean(dyn_batch_inputs, axis=0)
         dyn_batch_inputs_stddev = np.std(dyn_batch_inputs, axis=0)
@@ -322,7 +359,7 @@ def main(sess=None):
         dyn_batch_outputs -= np.full(dyn_batch_outputs.shape, dyn_batch_outputs_mean)
         dyn_batch_outputs /= np.full(dyn_batch_outputs.shape, dyn_batch_outputs_stddev)
 
-    dyn_model.fit(dyn_batch_inputs, dyn_batch_outputs, epochs=EPOCHS, verbose=2, batch_size=256, shuffle=True)  # validation_split=0.05
+    dyn_model.fit(dyn_batch_inputs, dyn_batch_outputs, epochs=EPOCHS, verbose=2, shuffle=True, validation_split=0.01)#, batch_size=128)
 
     # after X minibatches have been learned...
     #   1) generate dropout samples of the NN
@@ -332,7 +369,7 @@ def main(sess=None):
     #      2) perform a physics rollout, replacing the ODE integration with the NN dropout samples (timestep = control Hz timestep, or ODE timestep???)
     #      3) visually compare the ODE integration vs. population of NN dropout sample rollouts - MUST USE FIXED POLICY FOR ALL ROLLOUTS!!!
 
-    ideal_state_time_history, ideal_action_time_history = singleNNInstance(dyn_model)
+    ideal_state_time_history, ideal_action_time_history = singleNNInstance(dyn_model, dyn_batch_inputs_mean, dyn_batch_inputs_stddev, dyn_batch_outputs_mean, dyn_batch_outputs_stddev)
     final_position = ideal_state_time_history[-1, 1]
     final_velocity = ideal_state_time_history[-1, 2]
     final_action = ideal_action_time_history[-1, 1]
@@ -373,16 +410,15 @@ def main(sess=None):
             weights_mask = np.random.binomial(1, 1 - DYN_DROPOUT_RATE, size=weights.shape) / (1 - DYN_DROPOUT_RATE)
             masked_weights = np.multiply(weights_mask, weights)  # apply the dropout mask to the weights
             masked_weights_and_biases = [masked_weights, biases]
-            dropout_model.layers[layer_index].set_weights(masked_weights_and_biases) # manually apply the masked weights
+            dropout_model.layers[layer_index].set_weights(
+                masked_weights_and_biases)  # manually apply the masked weights
 
         # do not need to compile the models for feedforward-only use
-        s, a = singleNNInstance(dropout_model)
+        s, a = singleNNInstance(dropout_model, dyn_batch_inputs_mean, dyn_batch_inputs_stddev, dyn_batch_outputs_mean, dyn_batch_outputs_stddev)
         s = s[:ideal_state_time_history.shape[0], :]  # trim the time histories so that their length matches the ideal's length
         a = a[:ideal_state_time_history.shape[0], :]
         state_time_history_samples.append(s)
         action_time_history_samples.append(a)
-
-
 
     """
     dropout_output_population = np.zeros(shape=(DROPOUT_SAMPLE_COUNT, DYN_OUTPUT_DIMENSIONS))
@@ -414,25 +450,34 @@ def main(sess=None):
     ax1.set_ylabel('dyn NN position', color="r")
     ax1.tick_params('y', colors='r')
     plt.grid(True)
-    ax2 = ax1.twinx()
-    ax2.set_xlabel('time (s)')
-    ax2.set_ylabel('dyn NN velocity', color="b")
-    ax2.tick_params('y', colors='b')
-    ax3 = ax1.twinx()
-    ax3.set_xlabel('time (s)')
-    ax3.set_ylabel('\ndyn NN action', color="g")
-    ax3.tick_params('y', colors='g')
+    if PLOT_INCLUDE_VELOCITY:
+        ax2 = ax1.twinx()
+        ax2.set_xlabel('time (s)')
+        ax2.set_ylabel('dyn NN velocity', color="b")
+        ax2.tick_params('y', colors='b')
+    if PLOT_INCLUDE_ACTION:
+        ax3 = ax1.twinx()
+        ax3.set_xlabel('time (s)')
+        ax3.set_ylabel('\ndyn NN action', color="g")
+        ax3.tick_params('y', colors='g')
 
     for i in range(DROPOUT_SAMPLE_COUNT):
-        ax1.plot(state_time_history_samples[i][:, 0], state_time_history_samples[i][:, 1], 'r', linewidth=1.0, alpha=0.5)
-        ax2.plot(state_time_history_samples[i][:, 0], state_time_history_samples[i][:, 2], 'b', linewidth=1.0, alpha=0.5)
-        ax3.plot(action_time_history_samples[i][:, 0], action_time_history_samples[i][:, 1], 'g', linewidth=1.0, alpha=0.5)
+        ax1.plot(state_time_history_samples[i][:, 0], state_time_history_samples[i][:, 1], 'r', linewidth=1.0,
+                 alpha=0.5)
+        if PLOT_INCLUDE_VELOCITY:
+            ax2.plot(state_time_history_samples[i][:, 0], state_time_history_samples[i][:, 2], 'b', linewidth=1.0,
+                     alpha=0.5)
+        if PLOT_INCLUDE_ACTION:
+            ax3.plot(action_time_history_samples[i][:, 0], action_time_history_samples[i][:, 1], 'g', linewidth=1.0,
+                     alpha=0.5)
 
-    ax3.plot([0, ideal_action_time_history[-1, 0]], [TEST_FINAL_ACTION, TEST_FINAL_ACTION], 'g--', linewidth=4.0)
-    ax3.plot(ideal_action_time_history[:, 0], ideal_action_time_history[:, 1], 'g', linewidth=4.0)
+    if PLOT_INCLUDE_ACTION:
+        ax3.plot([0, ideal_action_time_history[-1, 0]], [TEST_FINAL_ACTION, TEST_FINAL_ACTION], 'g--', linewidth=4.0)
+        ax3.plot(ideal_action_time_history[:, 0], ideal_action_time_history[:, 1], 'g', linewidth=4.0)
 
-    ax2.plot([0, ideal_state_time_history[-1, 0]], [TEST_FINAL_VELOCITY, TEST_FINAL_VELOCITY], 'b--', linewidth=2.0)
-    ax2.plot(ideal_state_time_history[:, 0], ideal_state_time_history[:, 2], 'b', linewidth=4.0)
+    if PLOT_INCLUDE_VELOCITY:
+        ax2.plot([0, ideal_state_time_history[-1, 0]], [TEST_FINAL_VELOCITY, TEST_FINAL_VELOCITY], 'b--', linewidth=2.0)
+        ax2.plot(ideal_state_time_history[:, 0], ideal_state_time_history[:, 2], 'b', linewidth=4.0)
 
     ax1.plot([0, ideal_state_time_history[-1, 0]], [TEST_GOAL, TEST_GOAL], 'r--', linewidth=4.0)
     ax1.plot(ideal_state_time_history[:, 0], ideal_state_time_history[:, 1], 'r', linewidth=4.0)
@@ -440,21 +485,33 @@ def main(sess=None):
     plt.show()
 
     """
-    
+
     ax2.plot(state_time_history[:, 0], state_time_history[:, 2], 'b')
     ax2.plot([0, state_time_history[-1, 0]], [TEST_FINAL_VELOCITY, TEST_FINAL_VELOCITY], 'b--')
     # ax2.get_yaxis().set_visible(False)
 
     plt.grid(True)
 
-    
+
     ax3.plot(action_time_history[:, 0], action_time_history[:, 1], 'g')
     ax3.plot([0, action_time_history[-1, 0]], [TEST_FINAL_ACTION, TEST_FINAL_ACTION], 'g--')
     # ax3.get_yaxis().set_visible(False)
     plt.grid(True)
-    
+
     plt.show()
     """
+
+
+
+
+def main(sess=None):
+    if sess is None:
+        sess = tf.Session()
+        sess.run(tf.global_variables_initializer())
+
+    pidBootstrap()
+    # singleODEInstance(-50 + 100*np.random.rand())  # TODO: PID doesn't work very well when there is gravity, it takes a long time for integral action to accumulate
+
     return
 
 
