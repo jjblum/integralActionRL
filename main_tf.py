@@ -24,7 +24,7 @@ DYN_HIDDEN_ACTIVATIONS = ["linear", "linear"]
 DYN_DROPOUT_RATE = 0.5
 EPOCHS = 120
 NORMALIZE_EXPERIENCES = False
-DROPOUT_SAMPLE_COUNT = 5
+DROPOUT_SAMPLE_COUNT = 100
 
 ODE_TIME_STEP = 0.1  # seconds
 ODE_DEADLINE = 300  # seconds before ODE is prematurely terminated
@@ -332,44 +332,57 @@ def main(sess=None):
     #      2) perform a physics rollout, replacing the ODE integration with the NN dropout samples (timestep = control Hz timestep, or ODE timestep???)
     #      3) visually compare the ODE integration vs. population of NN dropout sample rollouts - MUST USE FIXED POLICY FOR ALL ROLLOUTS!!!
 
+    ideal_state_time_history, ideal_action_time_history = singleNNInstance(dyn_model)
+    final_position = ideal_state_time_history[-1, 1]
+    final_velocity = ideal_state_time_history[-1, 2]
+    final_action = ideal_action_time_history[-1, 1]
+
     # TODO: make a single dropout sample model and in the loop just change its weights. Maybe it is slow due to the overhead of making 100 Keras models.
     # TODO: if you parallelize, you need each thread/process to make its own root sample model and modify it each iteration
 
-    # initialize dropout models
-    dropout_models = list()
-    for _ in range(DROPOUT_SAMPLE_COUNT):
-        dropout_model = keras.Sequential()
-        n = 1
-        dropout_model.add(keras.layers.Dense(DYN_HIDDEN_LAYERS_SIZES[0], activation=DYN_HIDDEN_ACTIVATIONS[0], name="dyn_hidden_1",input_shape=(DYN_INPUT_DIMENSIONS,)))
-        # dropout_model.add(keras.layers.BatchNormalization(name="dyn_batchnorm_1"))  # TODO: batch normalization?
-        for dense_layer_size in DYN_HIDDEN_LAYERS_SIZES[1:]:
-            n += 1
-            dropout_model.add(keras.layers.Dense(dense_layer_size, activation=DYN_HIDDEN_ACTIVATIONS[n - 1], name="dyn_hidden_" + str(n)))
-            # dropout_model.add(keras.layers.BatchNormalization(name="dyn_batchnorm_" + str(n)))  # TODO: batch normalization?
-        dropout_model.add(keras.layers.Dense(DYN_OUTPUT_DIMENSIONS, activation="linear", name="dyn_output"))
+    dropout_model = keras.Sequential()
+    n = 1
+    dropout_model.add(
+        keras.layers.Dense(DYN_HIDDEN_LAYERS_SIZES[0], activation=DYN_HIDDEN_ACTIVATIONS[0], name="dyn_hidden_1",
+                           input_shape=(DYN_INPUT_DIMENSIONS,)))
+    # dropout_model.add(keras.layers.BatchNormalization(name="dyn_batchnorm_1"))  # TODO: batch normalization?
+    for dense_layer_size in DYN_HIDDEN_LAYERS_SIZES[1:]:
+        n += 1
+        dropout_model.add(
+            keras.layers.Dense(dense_layer_size, activation=DYN_HIDDEN_ACTIVATIONS[n - 1], name="dyn_hidden_" + str(n)))
+        # dropout_model.add(keras.layers.BatchNormalization(name="dyn_batchnorm_" + str(n)))  # TODO: batch normalization?
+    dropout_model.add(keras.layers.Dense(DYN_OUTPUT_DIMENSIONS, activation="linear", name="dyn_output"))
 
-        dropout_models.append(dropout_model)
+    state_time_history_samples = list()
+    action_time_history_samples = list()
+    for sample_id in range(DROPOUT_SAMPLE_COUNT):
+        print("Performing dropout sample rollout #{}".format(sample_id + 1))
+        for i in range(len(dyn_model.layers)):  # loop through the original NN's layers
+            layer = dyn_model.layers[i]
+            # If "dropout" or "batchnorm" is in the layer name, skip.
+            # print(layer.name)
+            if "dropout" in layer.name or "batchnorm" in layer.name:
+                # print("skipping the {} layer".format(layer.name))
+                continue
 
-    for i in range(len(dyn_model.layers)):
-        layer = dyn_model.layers[i]
-        # If "dropout" or "batchnorm" is in the layer name, skip.
-        print(layer.name)
-        if "dropout" in layer.name or "batchnorm" in layer.name:
-            print("skipping dropout and batch normalization layers")
-            continue
+            layer_index = layerIndexFromLayerName(dropout_model, layer.name)  # find the matching layer
 
-        layer_index = layerIndexFromLayerName(dropout_model, layer.name)  # find the matching layer
-
-        weights_and_biases = layer.get_weights()  # extract the weights (not biases!) from the model
-        weights = weights_and_biases[0]
-        biases = weights_and_biases[1]
-        for dropout_model in dropout_models:
+            weights_and_biases = layer.get_weights()  # extract the weights and biases from the model
+            weights = weights_and_biases[0]
+            biases = weights_and_biases[1]
             weights_mask = np.random.binomial(1, 1 - DYN_DROPOUT_RATE, size=weights.shape) / (1 - DYN_DROPOUT_RATE)
-            masked_weights = np.multiply(weights_mask, weights)
+            masked_weights = np.multiply(weights_mask, weights)  # apply the dropout mask to the weights
             masked_weights_and_biases = [masked_weights, biases]
-            dropout_model.layers[layer_index].set_weights(masked_weights_and_biases)
+            dropout_model.layers[layer_index].set_weights(masked_weights_and_biases) # manually apply the masked weights
 
-    # do not need to compile the models for feedforward-only use
+        # do not need to compile the models for feedforward-only use
+        s, a = singleNNInstance(dropout_model)
+        s = s[:ideal_state_time_history.shape[0], :]  # trim the time histories so that their length matches the ideal's length
+        a = a[:ideal_state_time_history.shape[0], :]
+        state_time_history_samples.append(s)
+        action_time_history_samples.append(a)
+
+
 
     """
     dropout_output_population = np.zeros(shape=(DROPOUT_SAMPLE_COUNT, DYN_OUTPUT_DIMENSIONS))
@@ -391,25 +404,10 @@ def main(sess=None):
 
     """
 
-    ideal_state_time_history, ideal_action_time_history = singleNNInstance(dyn_model)
-
-    # TODO: trim the time histories so that their length matches the ideal's length
-    state_time_history_samples = list()
-    action_time_history_samples = list()
-    for dropout_model in dropout_models:
-        s, a = singleNNInstance(dropout_model)
-        s = s[:ideal_state_time_history.shape[0], :]
-        a = a[:ideal_state_time_history.shape[0], :]
-        state_time_history_samples.append(s)
-        action_time_history_samples.append(a)
-
-    final_position = ideal_state_time_history[-1, 1]
-    final_velocity = ideal_state_time_history[-1, 2]
-    final_action = ideal_action_time_history[-1, 1]
     print("\tFinal position: {:.2f}\n\tFinal velocity: {:.2f}\n\tFinal action: {:.2f}".format(
         final_position, final_velocity, final_action))
 
-    # TODO: plot ideal and samples
+    # plot ideal and samples
     fig, ax1 = plt.subplots()
     plt.title("{}, {}".format(DYN_HIDDEN_LAYERS_SIZES, DYN_HIDDEN_ACTIVATIONS))
     ax1.set_xlabel('time (s)')
