@@ -24,7 +24,7 @@ DYN_HIDDEN_ACTIVATIONS = ["linear", "linear"]
 DYN_DROPOUT_RATE = 0.5
 EPOCHS = 120
 NORMALIZE_EXPERIENCES = False
-DROPOUT_SAMPLE_COUNT = 100
+DROPOUT_SAMPLE_COUNT = 5
 
 ODE_TIME_STEP = 0.1  # seconds
 ODE_DEADLINE = 300  # seconds before ODE is prematurely terminated
@@ -37,6 +37,15 @@ OSCILLATOR_G = 50
 TEST_GOAL = 25
 TEST_FINAL_ACTION = OSCILLATOR_K*TEST_GOAL - OSCILLATOR_G
 TEST_FINAL_VELOCITY = 0
+
+
+def layerIndexFromLayerName(model, layer_name):
+    index = None
+    for i, layer in enumerate(model.layers):
+        if layer.name == layer_name:
+            index = i
+            break
+    return index
 
 
 def generateReward(oscillator, t):
@@ -279,18 +288,20 @@ def main(sess=None):
     for _ in range(ODE_INSTANCES_BEFORE_LEARNING_STARTS):
         experiences.extend(singleODEInstance(-50 + 100*np.random.rand()))
 
-    # TODO: do we need to normalize (mean = 0, std.dev. = 1) the experiences?
+    # TODO: do we need to normalize (mean = 0, std.dev. = 1) the experiences? Or use batch normalization layers?
 
-    # setup a simple Relu network representing state+action->new state transitions
+    # setup a simple network representing state+action->new state transitions
     dyn_model = keras.Sequential()
 
     n = 1
     dyn_model.add(keras.layers.Dense(DYN_HIDDEN_LAYERS_SIZES[0], activation=DYN_HIDDEN_ACTIVATIONS[0], name="dyn_hidden_1", input_shape=(DYN_INPUT_DIMENSIONS,)))
+    # dyn_model.add(keras.layers.BatchNormalization(name="dyn_batchnorm_1")) # TODO: batch normalization?
     dyn_model.add(keras.layers.Dropout(DYN_DROPOUT_RATE, name="dyn_dropout_1"))
 
     for dense_layer_size in DYN_HIDDEN_LAYERS_SIZES[1:]:
         n += 1
         dyn_model.add(keras.layers.Dense(dense_layer_size, activation=DYN_HIDDEN_ACTIVATIONS[n-1], name="dyn_hidden_" + str(n)))
+        # dyn_model.add(keras.layers.BatchNormalization(name="dyn_batchnorm_" + str(n)))  # TODO: batch normalization?
         dyn_model.add(keras.layers.Dropout(DYN_DROPOUT_RATE, name="dyn_dropout_" + str(n)))
 
     dyn_model.add(keras.layers.Dense(DYN_OUTPUT_DIMENSIONS, activation="linear", name="dyn_output"))
@@ -313,13 +324,16 @@ def main(sess=None):
 
     dyn_model.fit(dyn_batch_inputs, dyn_batch_outputs, epochs=EPOCHS, verbose=2, batch_size=256, shuffle=True)  # validation_split=0.05
 
-    # TODO: after X minibatches have been learned...
-    # TODO:     1) generate dropout samples of the NN
-    # TODO:         a) extract the weights from the model
-    # TODO:         b) generate random dropout masks
-    # TODO:         c) apply the masks to copies of the weights and create new models with these weights
-    # TODO:     2) perform a physics rollout, replacing the ODE integration with the NN dropout samples (timestep = control Hz timestep, or ODE timestep???)
-    # TODO:     3) visually compare the ODE integration vs. population of NN dropout sample rollouts - MUST USE FIXED POLICY FOR ALL ROLLOUTS!!!
+    # after X minibatches have been learned...
+    #   1) generate dropout samples of the NN
+    #          a) extract the weights from the model
+    #          b) generate random dropout masks
+    #          c) apply the masks to copies of the weights and create new models with these weights
+    #      2) perform a physics rollout, replacing the ODE integration with the NN dropout samples (timestep = control Hz timestep, or ODE timestep???)
+    #      3) visually compare the ODE integration vs. population of NN dropout sample rollouts - MUST USE FIXED POLICY FOR ALL ROLLOUTS!!!
+
+    # TODO: make a single dropout sample model and in the loop just change its weights. Maybe it is slow due to the overhead of making 100 Keras models.
+    # TODO: if you parallelize, you need each thread/process to make its own root sample model and modify it each iteration
 
     # initialize dropout models
     dropout_models = list()
@@ -327,19 +341,25 @@ def main(sess=None):
         dropout_model = keras.Sequential()
         n = 1
         dropout_model.add(keras.layers.Dense(DYN_HIDDEN_LAYERS_SIZES[0], activation=DYN_HIDDEN_ACTIVATIONS[0], name="dyn_hidden_1",input_shape=(DYN_INPUT_DIMENSIONS,)))
+        # dropout_model.add(keras.layers.BatchNormalization(name="dyn_batchnorm_1"))  # TODO: batch normalization?
         for dense_layer_size in DYN_HIDDEN_LAYERS_SIZES[1:]:
             n += 1
             dropout_model.add(keras.layers.Dense(dense_layer_size, activation=DYN_HIDDEN_ACTIVATIONS[n - 1], name="dyn_hidden_" + str(n)))
-            dropout_model.add(keras.layers.Dense(DYN_OUTPUT_DIMENSIONS, activation="linear", name="dyn_output"))
+            # dropout_model.add(keras.layers.BatchNormalization(name="dyn_batchnorm_" + str(n)))  # TODO: batch normalization?
+        dropout_model.add(keras.layers.Dense(DYN_OUTPUT_DIMENSIONS, activation="linear", name="dyn_output"))
+
         dropout_models.append(dropout_model)
 
-    n = 0
     for i in range(len(dyn_model.layers)):
         layer = dyn_model.layers[i]
-        # If "dropout" is in the layer name, skip
-        if "dropout" in layer.name:
-            continue
+        # If "dropout" or "batchnorm" is in the layer name, skip.
         print(layer.name)
+        if "dropout" in layer.name or "batchnorm" in layer.name:
+            print("skipping dropout and batch normalization layers")
+            continue
+
+        layer_index = layerIndexFromLayerName(dropout_model, layer.name)  # find the matching layer
+
         weights_and_biases = layer.get_weights()  # extract the weights (not biases!) from the model
         weights = weights_and_biases[0]
         biases = weights_and_biases[1]
@@ -347,10 +367,10 @@ def main(sess=None):
             weights_mask = np.random.binomial(1, 1 - DYN_DROPOUT_RATE, size=weights.shape) / (1 - DYN_DROPOUT_RATE)
             masked_weights = np.multiply(weights_mask, weights)
             masked_weights_and_biases = [masked_weights, biases]
-            dropout_model.layers[n].set_weights(masked_weights_and_biases)
-        n += 1
+            dropout_model.layers[layer_index].set_weights(masked_weights_and_biases)
 
     # do not need to compile the models for feedforward-only use
+
     """
     dropout_output_population = np.zeros(shape=(DROPOUT_SAMPLE_COUNT, DYN_OUTPUT_DIMENSIONS))
     for i in range(DROPOUT_SAMPLE_COUNT):
@@ -410,14 +430,14 @@ def main(sess=None):
         ax2.plot(state_time_history_samples[i][:, 0], state_time_history_samples[i][:, 2], 'b', linewidth=1.0, alpha=0.5)
         ax3.plot(action_time_history_samples[i][:, 0], action_time_history_samples[i][:, 1], 'g', linewidth=1.0, alpha=0.5)
 
-    ax1.plot([0, ideal_state_time_history[-1, 0]], [TEST_GOAL, TEST_GOAL], 'r--', linewidth=4.0)
-    ax1.plot(ideal_state_time_history[:, 0], ideal_state_time_history[:, 1], 'r', linewidth=4.0)
+    ax3.plot([0, ideal_action_time_history[-1, 0]], [TEST_FINAL_ACTION, TEST_FINAL_ACTION], 'g--', linewidth=4.0)
+    ax3.plot(ideal_action_time_history[:, 0], ideal_action_time_history[:, 1], 'g', linewidth=4.0)
 
     ax2.plot([0, ideal_state_time_history[-1, 0]], [TEST_FINAL_VELOCITY, TEST_FINAL_VELOCITY], 'b--', linewidth=2.0)
-    ax2.plot(ideal_state_time_history[:, 0], ideal_state_time_history[:, 2], 'b', linewidth=2.0)
+    ax2.plot(ideal_state_time_history[:, 0], ideal_state_time_history[:, 2], 'b', linewidth=4.0)
 
-    ax3.plot([0, ideal_action_time_history[-1, 0]], [TEST_FINAL_ACTION, TEST_FINAL_ACTION], 'g--', linewidth=2.0)
-    ax3.plot(ideal_action_time_history[:, 0], ideal_action_time_history[:, 1], 'g', linewidth=2.0)
+    ax1.plot([0, ideal_state_time_history[-1, 0]], [TEST_GOAL, TEST_GOAL], 'r--', linewidth=4.0)
+    ax1.plot(ideal_state_time_history[:, 0], ideal_state_time_history[:, 1], 'r', linewidth=4.0)
 
     plt.show()
 
